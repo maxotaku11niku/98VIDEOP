@@ -53,6 +53,9 @@ main_allocate_plane_buffers:
 	int 0x18		#PC98 CRT BIOS: Turn off text display
 	mov ah, 0x40
 	int 0x18		#PC98 CRT BIOS: Turn on graphics display
+	mov ah, 0x42
+	mov ch, 0xC0
+	int 0x18		#PC98 CRT BIOS: Set display options (640x400, display page 0, colour mode)
 	mov al, 0x01
 	out 0x6A, al	#PC98 GDC I/O: Write mode register 2 (set to 16-colour mode)
 	call PROCEDURE_clean_screen #Preemptive screen clear just in case
