@@ -1,0 +1,43 @@
+Video codec notes
+Header:
+0x00	"98v"
+0x03	uint8  framerate (number of GPU frames to skip for every video frame)
+0x04	uint32 number of frames
+0x08	low byte uint8 Sample rate spec
+	0x00	44100 Hz
+	0x01	33075 Hz
+	0x02	22050 Hz
+	0x03	16537.5 Hz
+	0x04	11025 Hz
+	0x05	8270 Hz
+	0x06	5520 Hz
+	0x07	4130 Hz
+	high byte uint8 Sample depth spec
+	0x00	16-bits
+	0x40	8-bits
+0x0A	uint4[16][3] colour table (rg br gb ...) for all 16 colours
+
+Frame Data:
+Audio Data:
+uint16 length of audio data (16-bit words)
+Then a bunch of 16-bit words containing the audio data for this frame
+The audio data is in 8-bit signed ADPCM format which expands to signed 16-bit PCM
+ADPCM codec:
+	Encodes the difference from the last sample, and applies a bitshift according to the last difference.
+	The first sample is 0x0000, and the initial bitshift is 0. The bitshift value can reach a maximum of 8. 
+	Uses two-complement signed format. The sign is figured out with test data, 0x80, and if it is negative, then abs(data) is not(data) (this is off by one but it doesn't matter).
+	abs(data) <= 0x18: decrement bitshift by 1 after this sample.
+	abs(data) >= 0x68: increment bitshift by 1 after this sample.
+Video Frame Header:
+0x00	low byte  0000 IRGB  planes to update (automatically determines how many plane sections and which planes they correspond to)
+	high byte 0000 0000
+Plane Header:
+0x00	uint16 total length of data for this plane
+Plane data chunk:
+0x02	uint16 offset in plane to update (highest bit determines data type: 0 -> copy data, 1 -> fill data
+0x04	uint16 length to update (in 16-bit words)
+0x06	Plane data:
+16-bit words containing data for the plane (copy)
+or
+Single 16-bit word containing the data to fill with (fill)
+(repeats as many times as necessary)
