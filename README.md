@@ -10,9 +10,13 @@ I have so far only tested this program in the Neko Project II emulator, so I wou
 In brief: the PC-9801VX
 
 CPU: Intel 80286, 20 MHz 80486 recommended for a 'reasonable' video, but lower quality videos don't require quite as much speed
+
 RAM: 256 KB
+
 GPU: μPD7220 with 16-colour capability
+
 Sound: Buzzer with PIT, PC-9801-86 recommended for higher quality sound
+
 Storage: Program itself is only a kilobyte or so, may need lots of megabytes for the actual videos though
 
 # Building
