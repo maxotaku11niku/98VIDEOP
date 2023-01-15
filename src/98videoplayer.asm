@@ -118,6 +118,7 @@ PROCEDURE_install_vsync_vector: #void install_vsync_vector(void)
 	int 0x21		#DOS API: Set interrupt vector (0x0A [hardware: VSYNC] to our vsync function)
 	out 0x64, al	#PC-98 GDC I/O: CRT interrupt reset
 	in al, 0x02		#PC-98 interrupt controller I/O: read mask
+	mov old_interrupt_mask, al
 	and al, 0xFB	#Add VSYNC interrupts
 	out 0x02, al	#PC-98 interrupt controller I/O: set mask
 	sti
@@ -132,8 +133,8 @@ PROCEDURE_restore_vsync_vector: #void restore_vsync_vector(void)
 	int 0x21		#DOS API: Set interrupt vector (0x0A [hardware: VSYNC])
 	push cs
 	pop ds
-	in al, 0x02		#PC-98 interrupt controller I/O: read mask
-	or al, 0x04		#Turn off VSYNC interrupts
+	#in al, 0x02		#PC-98 interrupt controller I/O: read mask
+	mov al, old_interrupt_mask #Restore previous interrupt mask
 	out 0x02, al	#PC-98 interrupt controller I/O: set mask
 	sti
 	ret
@@ -388,8 +389,8 @@ video_read_vsync_wait:
 	dec dx
 	jne video_read_frameloop
 	
-	mov ax, using_86
-	cmp ax, 0x01
+	mov al, using_86
+	cmp al, 0x01
 	je video_read_endfunc
 	call PROCEDURE_restore_timer_vector
 	jmp video_read_endfunc
@@ -704,6 +705,7 @@ frameloop_planeend:
 	new_timer_vector_offset:	.dc.w	PROCEDURE_buzzer_interrupt
 	using_86:					.byte	0x00
 	current_buzzer_shiftdown:	.byte	0x00
+	old_interrupt_mask:			.byte	0x00
 	current_sample_midpoint1:	.word	0x0000
 	current_sample_midpoint2:	.word	0x0000
 	temp_pwmval:				.word	0x0000
