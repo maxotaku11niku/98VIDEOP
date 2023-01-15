@@ -6,5 +6,14 @@
 
 I have so far only tested this program in the Neko Project II emulator, so I would appreciate a test on real hardware. I have a demonstration video ready, but it is not present in a release because of potential intellectual property issues (but it is a cool video, so I would like to use it). I should have an example video of some kind ready soon.
 
+# Minimum requirements
+In brief: the PC-9801VX
+
+CPU: Intel 80286, 20 MHz 80486 recommended for a 'reasonable' video, but lower quality videos don't require quite as much speed
+RAM: 256 KB
+GPU: μPD7220 with 16-colour capability
+Sound: Buzzer with PIT, PC-9801-86 recommended for higher quality sound
+Storage: Program itself is only a kilobyte or so, may need lots of megabytes for the actual videos though
+
 # Building
 I build the source using the GNU assembler and a cursed and totally unportable batch file. If you're at all interested in building this from source, well, there's only one source file :). Remember that this is intended to be a DOS .COM executable, so you should have a `.org 0x100` directive or similar to specify the origin point. Double check the actual file you get doesn't have 256 empty bytes at the beginning; it seems that modern assemblers can't handle such old stuff.
