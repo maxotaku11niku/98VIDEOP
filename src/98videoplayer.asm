@@ -258,6 +258,54 @@ video_read_palette_form: #Read colour table into hardware palette
 	add ax, 0x0002
 	mov filebuffercurpos, ax
 	
+	#Build APDCM acceleration table
+	lea di, accelerationtable_adpcm
+	push cs
+	pop es
+	mov ax, di
+	add ax, 0x0900
+	mov samplebufferptr, ax #set the pointer to the sample buffer above the acceleration table
+	xor al, al
+	xor cx, cx
+	mov cl, 0x68
+	rep stosb
+	inc al
+	mov cl, 0x30
+	rep stosb
+	dec al
+	mov cl, 0x68
+	rep stosb #build table for shift = 0
+	
+	mov ah, 0x07
+video_read_adpcmtable_formloop: #build table for shift 1 to 7
+	mov cl, 0x19
+	rep stosb
+	inc al
+	mov cl, 0x4F
+	rep stosb
+	inc al
+	mov cl, 0x30
+	rep stosb
+	dec al
+	mov cl, 0x4F
+	rep stosb
+	dec al
+	mov cl, 0x19
+	rep stosb
+	inc al
+	dec ah
+	jnz video_read_adpcmtable_formloop
+	
+	mov cl, 0x19
+	rep stosb
+	inc al
+	mov cl, 0xCE
+	rep stosb
+	dec al
+	mov cl, 0x19
+	rep stosb #build table for shift = 8
+	
+	
 	
 	#Check for 86 soundboard
 	mov dx, 0xA460
@@ -330,7 +378,7 @@ video_read_palette_form: #Read colour table into hardware palette
 video_read_no86:
 	#Prepare audio here if there is no 86 soundboard available
 	#Clear sample buffer
-	lea di, samplebuffer
+	mov di, samplebufferptr
 	push cs
 	pop es
 	mov cx, 0x2000
@@ -526,7 +574,7 @@ PROCEDURE_frameloop: #void frameloop(void)
 	
 	#Decode ADPCM for buzzer PCM
 	pop bp
-	lea di, samplebuffer
+	mov di, cs:samplebufferptr
 	push cs
 	pop es
 	mov dx, 0xA46C
@@ -535,12 +583,10 @@ frameloop_buzaudio_pushloop:
 	lodsw
 	push ax
 	xor ah, ah
-	mov bx, ax
-	test bl, 0x80
-	jz frameloop_buzaudio_noneg1
-	not bl
-	not ah
-frameloop_buzaudio_noneg1:
+	mov bx, cx
+	shl bx, 8
+	add bx, ax
+	cbw
 	shl ax, cl
 	add ax, cs:lastsample
 	mov cs:lastsample, ax
@@ -551,29 +597,14 @@ frameloop_buzaudio_noneg1:
 	xor ch, ch
 	add ax, cs:current_sample_midpoint1
 	stosw #store sample in buffer
-	cmp bl, 0x18
-	ja frameloop_buzaudio_nodrop1
-	dec cx
-	jns frameloop_buzaudio_noshift1
-	xor cx, cx
-	jmp frameloop_buzaudio_noshift1
-frameloop_buzaudio_nodrop1:
-	cmp bl, 0x68
-	jb frameloop_buzaudio_noshift1
-	inc cx
-	test cl, 0x08
-	jz frameloop_buzaudio_noshift1
-	mov cl, 0x08
-frameloop_buzaudio_noshift1:
+	mov cl, cs:[bx+accelerationtable_adpcm]
 	pop ax
-	xor al, al
 	xchg al, ah
-	mov bx, ax
-	test bl, 0x80
-	jz frameloop_buzaudio_noneg2
-	not bl
-	not ah
-frameloop_buzaudio_noneg2:
+	xor ah, ah
+	mov bx, cx
+	shl bx, 8
+	add bx, ax
+	cbw
 	shl ax, cl
 	add ax, cs:lastsample
 	mov cs:lastsample, ax
@@ -582,25 +613,12 @@ frameloop_buzaudio_noneg2:
 	sar ax, cl
 	xchg ch, cl
 	xor ch, ch
-	add ax, cs:current_sample_midpoint2
+	add ax, cs:current_sample_midpoint1
 	stosw #store sample in buffer
-	cmp bl, 0x18
-	ja frameloop_buzaudio_nodrop2
-	dec cx
-	jns frameloop_buzaudio_noshift2
-	xor cx, cx
-	jmp frameloop_buzaudio_noshift2
-frameloop_buzaudio_nodrop2:
-	cmp bl, 0x68
-	jb frameloop_buzaudio_noshift2
-	inc cx
-	test cl, 0x08
-	jz frameloop_buzaudio_noshift2
-	mov cl, 0x08
-frameloop_buzaudio_noshift2:
+	mov cl, cs:[bx+accelerationtable_adpcm]
 	dec bp
 	jnz frameloop_buzaudio_pushloop
-	lea ax, samplebuffer
+	mov ax, cs:samplebufferptr
 	mov cs:currentreadsample, ax
 	jmp frameloop_videodata_process
 	
@@ -613,12 +631,10 @@ frameloop_86audio_pushloop:
 	lodsw
 	push ax
 	xor ah, ah
-	mov bx, ax
-	test bl, 0x80
-	jz frameloop_86audio_noneg1
-	not bl
-	not ah
-frameloop_86audio_noneg1:
+	mov bx, cx
+	shl bx, 8
+	add bx, ax
+	cbw
 	shl ax, cl
 	add ax, cs:lastsample
 	mov cs:lastsample, ax
@@ -630,29 +646,14 @@ frameloop_86audio_noneg1:
 	out dx, al
 	xchg al, ah
 	out dx, al
-	cmp bl, 0x18
-	ja frameloop_86audio_nodrop1
-	dec cx
-	jns frameloop_86audio_noshift1
-	xor cx, cx
-	jmp frameloop_86audio_noshift1
-frameloop_86audio_nodrop1:
-	cmp bl, 0x68
-	jb frameloop_86audio_noshift1
-	inc cx
-	test cl, 0x08
-	jz frameloop_86audio_noshift1
-	mov cl, 0x08
-frameloop_86audio_noshift1:
+	mov cl, cs:[bx+accelerationtable_adpcm]
 	pop ax
-	xor al, al
 	xchg al, ah
-	mov bx, ax
-	test bl, 0x80
-	jz frameloop_86audio_noneg2
-	not bl
-	not ah
-frameloop_86audio_noneg2:
+	xor ah, ah
+	mov bx, cx
+	shl bx, 8
+	add bx, ax
+	cbw
 	shl ax, cl
 	add ax, cs:lastsample
 	mov cs:lastsample, ax
@@ -664,20 +665,7 @@ frameloop_86audio_noneg2:
 	out dx, al
 	xchg al, ah
 	out dx, al
-	cmp bl, 0x18
-	ja frameloop_86audio_nodrop2
-	dec cx
-	jns frameloop_86audio_noshift2
-	xor cx, cx
-	jmp frameloop_86audio_noshift2
-frameloop_86audio_nodrop2:
-	cmp bl, 0x68
-	jb frameloop_86audio_noshift2
-	inc cx
-	test cl, 0x08
-	jz frameloop_86audio_noshift2
-	mov cl, 0x08
-frameloop_86audio_noshift2:
+	mov cl, cs:[bx+accelerationtable_adpcm]
 	dec di
 	jnz frameloop_86audio_pushloop
 	
@@ -766,7 +754,6 @@ frameloop_planeend:
 	filebuffercurpos:			.word	0x0000
 	filebuffercurwritepos:		.word	0x0000
 	audiolen:					.word	0x0000
-	currentsamplestart:			.word	0x0000
 	currentreadsample:			.word	0x0000
 	videolen:					.word	0x0000, 0x0000, 0x0000, 0x0000
 	doplanes:					.word	0x0000, 0x0000
@@ -778,4 +765,5 @@ frameloop_planeend:
 	numframes_lo:				.word	0x0000
 	numframes_hi:				.word	0x0000 #32-bit to support very long videos
 	filehandle:					.word	0x0000
-	samplebuffer:				.word	0x0000
+	samplebufferptr:			.word	0x0000
+	accelerationtable_adpcm:	.byte	0x00
