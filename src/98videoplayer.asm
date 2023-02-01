@@ -1,6 +1,6 @@
 #98VIDEOP.COM
 #Video player for PC-98
-#Maxim Hoxha 2022
+#Maxim Hoxha 2022-2023
 
 #Permission is hereby granted, free of charge, to any person
 #obtaining a copy of this software and associated documentation
@@ -32,7 +32,7 @@ PROCEDURE_main: #int main(char[] argv)
 	mov ax, cs
 	mov baseseg, ax #Get loaded segment
 	add ax, 0x1000
-	mov samplebufferseg, ax #Set sample buffer segment
+	mov filebufferseg, ax #Set file buffer segment
 	mov ax, 0x3D00
 	#DOS-specific: null-terminate command stub in PSP
 	xor bx, bx
@@ -133,7 +133,6 @@ PROCEDURE_restore_vsync_vector: #void restore_vsync_vector(void)
 	int 0x21		#DOS API: Set interrupt vector (0x0A [hardware: VSYNC])
 	push cs
 	pop ds
-	#in al, 0x02		#PC-98 interrupt controller I/O: read mask
 	mov al, old_interrupt_mask #Restore previous interrupt mask
 	out 0x02, al	#PC-98 interrupt controller I/O: set mask
 	sti
@@ -180,16 +179,19 @@ PROCEDURE_restore_timer_vector: #void restore_timer_vector(void)
 #Reads in the video file
 #handle [bx]: File handle returned by DOS
 PROCEDURE_video_read: #void video_read(uint16 handle [in bx])
-	mov cx, 0x24
-	lea dx, filebuffer
-	mov ah, 0x3F
-	int 0x21		#DOS API: Read from file (0x24 bytes into filebuffer)
-	mov si, dx
+	mov ax, 0xC000
+	mov cx, ax
+	mov filebuffercurwritepos, ax
+	xor dx, dx
 	lea di, magic_number
+	mov ds, filebufferseg
+	mov ah, 0x3F
+	int 0x21		#DOS API: Read from file (0xC000 bytes into filebuffer)
+	xor si, si
 	mov bx, 0
 video_read_magicnum_loop: #Check that the file signature is ok
 	mov al, [si]
-	mov ah, [di]
+	mov ah, cs:[di]
 	test ah, ah
 	jz video_read_end_magicnum
 	xor ah, al
@@ -201,14 +203,14 @@ video_read_end_magicnum: #Set various options
 	lodsb
 	mov ah, 0
 	inc ax
-	mov frameskip, ax
-	mov framesleft, ax
+	mov cs:frameskip, ax
+	mov cs:framesleft, ax
 	lodsw
-	mov numframes_lo, ax
+	mov cs:numframes_lo, ax
 	lodsw
-	mov numframes_hi, ax
+	mov cs:numframes_hi, ax
 	lodsw
-	mov audiospec, ax
+	mov cs:audiospec, ax
 	xor ax, ax
 	mov cl, 16
 video_read_palette_form: #Read colour table into hardware palette
@@ -249,6 +251,13 @@ video_read_palette_form: #Read colour table into hardware palette
 	inc si
 	dec cl
 	jnz video_read_palette_form
+	
+	push cs
+	pop ds
+	mov ax, si
+	add ax, 0x0002
+	mov filebuffercurpos, ax
+	
 	
 	#Check for 86 soundboard
 	mov dx, 0xA460
@@ -321,14 +330,12 @@ video_read_palette_form: #Read colour table into hardware palette
 video_read_no86:
 	#Prepare audio here if there is no 86 soundboard available
 	#Clear sample buffer
-	xor di, di
-	mov ax, samplebufferseg
-	mov es, ax
-	mov cx, 0xFFFF
-	mov ax, current_sample_midpoint1
-	rep stosw
+	lea di, samplebuffer
 	push cs
 	pop es
+	mov cx, 0x2000
+	mov ax, current_sample_midpoint1
+	rep stosw
 	
 	mov al, 0x36
 	out 0x77, al #set PIT mode for channel 0 (interrupt timer, set to rate generator mode)
@@ -395,6 +402,8 @@ video_read_vsync_wait:
 	call PROCEDURE_restore_timer_vector
 	jmp video_read_endfunc
 video_read_wrongformat:
+	push cs
+	pop ds
 	mov ah, 0x09
 	lea dx, file_formaterror_message
 	int 0x21		#DOS Main API, ah = 09h: Display string, dx = &file_formaterror_message: Pointer to string
@@ -427,13 +436,13 @@ PROCEDURE_buzzer_interrupt: #void buzzer_interrupt(void)
 	
 	mov dx, 0x3FDB
 	mov si, cs:currentreadsample
-	mov ax, cs:samplebufferseg
-	mov ds, ax
+	push cs
+	pop ds
 	lodsw
 	out dx, al
 	xchg al, ah
 	out dx, al
-	mov cs:currentreadsample, si
+	mov currentreadsample, si
 	
 	mov al, 0x20
 	out 0x00, al	#PC-98 interrupt controller: signal end of interrupt
@@ -442,34 +451,86 @@ PROCEDURE_buzzer_interrupt: #void buzzer_interrupt(void)
 	pop si
 	pop dx
 	iret
+
+#Attempt to read a sector-aligned chunk from file, skipping if we don't need to read any more data
+PROCEDURE_tryreadsection: #void tryreadsection(uint16 length [in ax])
+	push dx
+	push cx
+	push bx
+	push ds
+	mov dx, cs:filebuffercurwritepos
+	push dx
+	mov cx, cs:filebuffercurpos
+	sub dx, cx
+	mov bx, dx
+	sub ax, bx #bx has the length as yet unread
+	jbe tryreadsection_end_noread #if requested length is less than or equal to the length as yet unread, don't bother
+	add ax, 0x07FF
+	and ax, 0xF800
+	mov bx, cs:filehandle
+	pop dx
+	push dx
+	add dx, ax
+	jc tryreadsection_wraparound #if requested length would result in overflowing our buffer, account for this, since DOS might try to write beyond the buffer segment
+	pop dx
+tryreadsection_backfromwrap:
+	mov cx, ax
+	mov ds, cs:filebufferseg
+	mov ah, 0x3F
+	int 0x21		#DOS API: Read from file
+	add dx, cx
+	jmp tryreadsection_end
+tryreadsection_wraparound:
+	pop dx
+	mov cx, dx
+	not cx
+	inc cx
+	sub ax, cx
+	mov ds, cs:filebufferseg
+	push ax
+	mov ah, 0x3F
+	int 0x21		#DOS API: Read from file
+	pop ax
+	xor dx, dx
+	test ax, ax
+	jz tryreadsection_end
+	jmp tryreadsection_backfromwrap
+tryreadsection_end_noread:
+	pop dx
+tryreadsection_end:
+	mov cs:filebuffercurwritepos, dx
+	pop ds
+	pop bx
+	pop cx
+	pop dx
+	ret
 	
 #Loop for each frame
 PROCEDURE_frameloop: #void frameloop(void)
 	push cx #push our loop counters, doesn't take too long
 	push dx
 	
+	mov ds, filebufferseg
 	lodsw #ax has audio length
 	mov cx, ax
 	push cx
-	shl cx, 1
-	add cx, 4
-	lea dx, filebuffer
-	mov bx, filehandle
-	mov ah, 0x3F
-	int 0x21		#DOS API: Read from file (length of audio + 4 bytes into filebuffer)
+	mov cs:filebuffercurpos, si
+	shl ax, 1
+	add ax, 4
+	call PROCEDURE_tryreadsection
 	
-	mov al, using_86
+	mov al, cs:using_86
+	mov si, cs:filebuffercurpos
 	cmp al, 0x01
 	je frameloop_86audio
 	
 	#Decode ADPCM for buzzer PCM
-	lea si, filebuffer
 	pop bp
-	xor di, di
-	mov ax, samplebufferseg
-	mov es, ax
+	lea di, samplebuffer
+	push cs
+	pop es
 	mov dx, 0xA46C
-	mov cx, adpcmshiftval
+	mov cx, cs:adpcmshiftval
 frameloop_buzaudio_pushloop:
 	lodsw
 	push ax
@@ -481,14 +542,14 @@ frameloop_buzaudio_pushloop:
 	not ah
 frameloop_buzaudio_noneg1:
 	shl ax, cl
-	add ax, lastsample
-	mov lastsample, ax
-	mov ch, current_buzzer_shiftdown
+	add ax, cs:lastsample
+	mov cs:lastsample, ax
+	mov ch, cs:current_buzzer_shiftdown
 	xchg ch, cl
 	sar ax, cl
 	xchg ch, cl
 	xor ch, ch
-	add ax, current_sample_midpoint1
+	add ax, cs:current_sample_midpoint1
 	stosw #store sample in buffer
 	cmp bl, 0x18
 	ja frameloop_buzaudio_nodrop1
@@ -514,14 +575,14 @@ frameloop_buzaudio_noshift1:
 	not ah
 frameloop_buzaudio_noneg2:
 	shl ax, cl
-	add ax, lastsample
-	mov lastsample, ax
-	mov ch, current_buzzer_shiftdown
+	add ax, cs:lastsample
+	mov cs:lastsample, ax
+	mov ch, cs:current_buzzer_shiftdown
 	xchg ch, cl
 	sar ax, cl
 	xchg ch, cl
 	xor ch, ch
-	add ax, current_sample_midpoint2
+	add ax, cs:current_sample_midpoint2
 	stosw #store sample in buffer
 	cmp bl, 0x18
 	ja frameloop_buzaudio_nodrop2
@@ -539,16 +600,15 @@ frameloop_buzaudio_nodrop2:
 frameloop_buzaudio_noshift2:
 	dec bp
 	jnz frameloop_buzaudio_pushloop
-	xor ax, ax
-	mov currentreadsample, ax
+	lea ax, samplebuffer
+	mov cs:currentreadsample, ax
 	jmp frameloop_videodata_process
 	
 frameloop_86audio:
 	#Decode ADPCM for 86 PCM
-	lea si, filebuffer
 	pop di
 	mov dx, 0xA46C
-	mov cx, adpcmshiftval
+	mov cx, cs:adpcmshiftval
 frameloop_86audio_pushloop:
 	lodsw
 	push ax
@@ -560,8 +620,8 @@ frameloop_86audio_pushloop:
 	not ah
 frameloop_86audio_noneg1:
 	shl ax, cl
-	add ax, lastsample
-	mov lastsample, ax
+	add ax, cs:lastsample
+	mov cs:lastsample, ax
 	xchg al, ah #output sample to both channels
 	out dx, al
 	xchg al, ah
@@ -594,8 +654,8 @@ frameloop_86audio_noshift1:
 	not ah
 frameloop_86audio_noneg2:
 	shl ax, cl
-	add ax, lastsample
-	mov lastsample, ax
+	add ax, cs:lastsample
+	mov cs:lastsample, ax
 	xchg al, ah #output sample to both channels
 	out dx, al
 	xchg al, ah
@@ -622,66 +682,59 @@ frameloop_86audio_noshift2:
 	jnz frameloop_86audio_pushloop
 	
 frameloop_videodata_process:
-	mov adpcmshiftval, cx
+	mov cs:adpcmshiftval, cx
 	#Get data from file
 	lodsw #ax has planes to do
-	mov doplanes, ax
+	mov cs:doplanes, ax
 	mov bx, 0
 frameloop_planereadloop:
-	mov dx, [bx+planetests]
-	mov ax, doplanes
+	mov dx, cs:[bx+planetests]
+	mov ax, cs:doplanes
 	test ax, dx
 	jz frameloop_planeend
 	lodsw #ax has plane length
-	mov [bx+videolen], ax
-	mov cx, ax
-	inc cx
-	shl cx, 1
-	lea dx, filebuffer
-	push bx
-	mov bx, filehandle
-	mov ah, 0x3F
-	int 0x21		#DOS API: Read from file (length of plane + 2 bytes into filebuffer)
-	pop bx
-	#We'll want to return  to our read point later
+	mov cs:[bx+videolen], ax
+	mov cs:filebuffercurpos, si
+	inc ax
+	shl ax, 1
+	call PROCEDURE_tryreadsection
 	
 	#Write data to planes
-	lea si, filebuffer
-	mov dx, [videolen+bx]
+	mov si, cs:filebuffercurpos
+	mov dx, cs:[videolen+bx]
 	test dx, dx
 	jz frameloop_planeend #If length is zero, skip to the end of the plane
-	mov ax, [planeseg+bx]
+	mov ax, cs:[planeseg+bx]
 	mov es, ax
 frameloop_deltaloop:
 	lodsw #ax has offset
-	mov cx, ax
-	and cx, 0x7FFF
-	mov di, cx
+	mov di, ax
+	and di, 0x7FFF
 	test ax, 0x8000
-	jz frameloop_copydelta
+	jnz frameloop_filldelta
+	lodsw #ax has length
+	mov cx, ax
+	sub dx, cx
+	rep movsw #copy time
+	sub dx, 2
+	ja frameloop_deltaloop
+	jmp frameloop_planeend
+frameloop_filldelta:
 	lodsw #ax has length
 	mov cx, ax
 	lodsw #ax has word to copy
 	rep stosw
 	sub dx, 3
 	ja frameloop_deltaloop
-	jmp frameloop_planeend
-frameloop_copydelta:
-	lodsw #ax has length
-	mov cx, ax
-	push cx
-	rep movsw #copy time
-	pop cx
-	add cx, 2
-	sub dx, cx
-	ja frameloop_deltaloop
 	
 frameloop_planeend:
-	push cs #Reset ds after this plane
-	pop ds
+	mov cs:filebuffercurpos, si
 	add bx, 2
 	cmp bx, 8
 	jb frameloop_planereadloop
+	
+	push cs
+	pop ds
 	
 	pop dx
 	pop cx
@@ -708,9 +761,10 @@ frameloop_planeend:
 	old_interrupt_mask:			.byte	0x00
 	current_sample_midpoint1:	.word	0x0000
 	current_sample_midpoint2:	.word	0x0000
-	temp_pwmval:				.word	0x0000
 	baseseg:					.word	0x0000
-	samplebufferseg:			.word	0x0000
+	filebufferseg:				.word	0x0000
+	filebuffercurpos:			.word	0x0000
+	filebuffercurwritepos:		.word	0x0000
 	audiolen:					.word	0x0000
 	currentsamplestart:			.word	0x0000
 	currentreadsample:			.word	0x0000
@@ -724,4 +778,4 @@ frameloop_planeend:
 	numframes_lo:				.word	0x0000
 	numframes_hi:				.word	0x0000 #32-bit to support very long videos
 	filehandle:					.word	0x0000
-	filebuffer:					.word	0x0000
+	samplebuffer:				.word	0x0000
