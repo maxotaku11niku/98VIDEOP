@@ -195,7 +195,9 @@ video_read_magicnum_loop: #Check that the file signature is ok
 	test ah, ah
 	jz video_read_end_magicnum
 	xor ah, al
-	jnz video_read_wrongformat
+	jz video_read_stillrightformat
+	jmp video_read_wrongformat #Prevent generating a conditional near jump, which is unsupported below 80386
+video_read_stillrightformat:
 	inc si
 	inc di
 	jmp video_read_magicnum_loop
@@ -484,8 +486,8 @@ PROCEDURE_buzzer_interrupt: #void buzzer_interrupt(void)
 	
 	mov dx, 0x3FDB
 	mov si, cs:currentreadsample
-	push cs
-	pop ds
+	mov ax, cs
+	mov ds, ax
 	lodsw
 	out dx, al
 	xchg al, ah
@@ -577,6 +579,8 @@ PROCEDURE_frameloop: #void frameloop(void)
 	mov di, cs:samplebufferptr
 	push cs
 	pop es
+	mov ax, cs:samplebufferptr
+	mov cs:currentreadsample, ax
 	mov dx, 0xA46C
 	mov cx, cs:adpcmshiftval
 frameloop_buzaudio_pushloop:
@@ -613,13 +617,11 @@ frameloop_buzaudio_pushloop:
 	sar ax, cl
 	xchg ch, cl
 	xor ch, ch
-	add ax, cs:current_sample_midpoint1
+	add ax, cs:current_sample_midpoint2
 	stosw #store sample in buffer
 	mov cl, cs:[bx+accelerationtable_adpcm]
 	dec bp
 	jnz frameloop_buzaudio_pushloop
-	mov ax, cs:samplebufferptr
-	mov cs:currentreadsample, ax
 	jmp frameloop_videodata_process
 	
 frameloop_86audio:
@@ -687,6 +689,39 @@ frameloop_planereadloop:
 	shl ax, 1
 	call PROCEDURE_tryreadsection
 	
+	#Write data fills
+	#mov si, cs:filebuffercurpos
+	#mov ax, cs:[planeseg+bx]
+	#mov es, ax
+	#lodsw #ax has number of fills
+	#test ax, ax
+	#jz frameloop_copystart #If length is zero, skip to doing copies
+	#mov dx, ax
+#frameloop_fillloop:
+	#lodsw #ax has offset
+	#mov di, ax
+	#lodsw #ax has length
+	#mov cx, ax
+	#lodsw #ax has word to copy
+	#rep stosw
+	#dec dx
+	#jnz frameloop_fillloop
+	
+	#Write data copies
+#frameloop_copystart:
+	#lodsw #ax has number of copies
+	#test ax, ax
+	#jz frameloop_planeend #If length is zero, skip to the end of the plane
+	#mov dx, ax
+#frameloop_copyloop:
+	#lodsw #ax has offset
+	#mov di, ax
+	#lodsw #ax has length
+	#mov cx, ax
+	#rep movsw
+	#dec dx
+	#jnz frameloop_copyloop
+	
 	#Write data to planes
 	mov si, cs:filebuffercurpos
 	mov dx, cs:[videolen+bx]
@@ -702,7 +737,7 @@ frameloop_deltaloop:
 	jnz frameloop_filldelta
 	lodsw #ax has length
 	mov cx, ax
-	sub dx, cx
+	sub dx, ax
 	rep movsw #copy time
 	sub dx, 2
 	ja frameloop_deltaloop
@@ -736,8 +771,8 @@ frameloop_planeend:
 								#Hz     44100.0 33075.0 22050.0 16537.5 11025.0  8268.8  5520.0  4130.0
 	sampleratespec_to_buzzfreq:	.word	0x0038, 0x004A, 0x006F, 0x0095, 0x00DF, 0x0129, 0x01BD, 0x0253 #2.4576 MHz bus
 								.word	0x002D, 0x003C, 0x005B, 0x0079, 0x00B5, 0x00F1, 0x016A, 0x01E3 #1.9968 MHz bus
-	shiftdownvalues:			.byte	  0x0A,   0x0A,   0x09,   0x09,   0x08,   0x08,   0x07,   0x07 #2.4576 MHz bus
-								.byte	  0x0B,   0x0A,   0x0A,   0x09,   0x09,   0x08,   0x08,   0x07 #1.9968 MHz bus
+	shiftdownvalues:			.byte	  0x0B,   0x0A,   0x0A,   0x09,   0x09,   0x08,   0x08,   0x07 #2.4576 MHz bus
+								.byte	  0x0B,   0x0B,   0x0A,   0x0A,   0x09,   0x09,   0x08,   0x08 #1.9968 MHz bus
 	old_vsync_vector_offset:	.word	0x0000
 	old_vsync_vector_segment:	.word	0x0000
 	old_timer_vector_offset:	.word	0x0000
