@@ -11,7 +11,7 @@ Example videos can be found [here](https://drive.google.com/drive/folders/1yOV2Q
 # Minimum requirements
 In brief: the PC-9801VX
 
-CPU: Intel 80286, 20 MHz 80486 recommended for a 'reasonable' video, but lower quality videos don't require quite as much speed
+CPU: Intel 80286, 12 MHz 80386 recommended for a 'reasonable' video, but lower quality videos don't require quite as much speed
 
 RAM: 256 KB
 
