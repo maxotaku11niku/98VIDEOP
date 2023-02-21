@@ -681,7 +681,9 @@ frameloop_planereadloop:
 	mov dx, cs:[bx+planetests]
 	mov ax, cs:doplanes
 	test ax, dx
-	jz frameloop_planeend
+	jnz frameloop_noplaneskip
+	jmp frameloop_planeend #Prevent generating a conditional near jump, which is unsupported below 80386
+frameloop_noplaneskip:
 	lodsw #ax has plane length
 	mov cs:[bx+videolen], ax
 	mov cs:filebuffercurpos, si
@@ -690,72 +692,217 @@ frameloop_planereadloop:
 	call PROCEDURE_tryreadsection
 	
 	#Write data fills
-	#mov si, cs:filebuffercurpos
-	#mov ax, cs:[planeseg+bx]
-	#mov es, ax
-	#lodsw #ax has number of fills
-	#test ax, ax
-	#jz frameloop_copystart #If length is zero, skip to doing copies
-	#mov dx, ax
-#frameloop_fillloop:
-	#lodsw #ax has offset
-	#mov di, ax
-	#lodsw #ax has length
-	#mov cx, ax
-	#lodsw #ax has word to copy
-	#rep stosw
-	#dec dx
-	#jnz frameloop_fillloop
-	
-	#Write data copies
-#frameloop_copystart:
-	#lodsw #ax has number of copies
-	#test ax, ax
-	#jz frameloop_planeend #If length is zero, skip to the end of the plane
-	#mov dx, ax
-#frameloop_copyloop:
-	#lodsw #ax has offset
-	#mov di, ax
-	#lodsw #ax has length
-	#mov cx, ax
-	#rep movsw
-	#dec dx
-	#jnz frameloop_copyloop
-	
-	#Write data to planes
 	mov si, cs:filebuffercurpos
-	mov dx, cs:[videolen+bx]
-	test dx, dx
-	jz frameloop_planeend #If length is zero, skip to the end of the plane
 	mov ax, cs:[planeseg+bx]
 	mov es, ax
-frameloop_deltaloop:
+	lodsw #ax has number of fills
+	mov dx, ax
+	shr dx, 1
+	jnc frameloop_fill_no1
 	lodsw #ax has offset
 	mov di, ax
-	and di, 0x7FFF
-	test ax, 0x8000
-	jnz frameloop_filldelta
-	lodsw #ax has length
-	mov cx, ax
-	sub dx, ax
-	rep movsw #copy time
-	sub dx, 2
-	ja frameloop_deltaloop
-	jmp frameloop_planeend
-frameloop_filldelta:
 	lodsw #ax has length
 	mov cx, ax
 	lodsw #ax has word to copy
 	rep stosw
-	sub dx, 3
-	ja frameloop_deltaloop
+frameloop_fill_no1:
+	shr dx, 1
+	jnc frameloop_fill_no2
+	lodsw #ax has offset
+	mov di, ax
+	lodsw #ax has length
+	mov cx, ax
+	lodsw #ax has word to copy
+	rep stosw
+	lodsw #ax has offset
+	mov di, ax
+	lodsw #ax has length
+	mov cx, ax
+	lodsw #ax has word to copy
+	rep stosw
+frameloop_fill_no2:
+	shr dx, 1
+	jnc frameloop_fill_no4
+	lodsw #ax has offset
+	mov di, ax
+	lodsw #ax has length
+	mov cx, ax
+	lodsw #ax has word to copy
+	rep stosw
+	lodsw #ax has offset
+	mov di, ax
+	lodsw #ax has length
+	mov cx, ax
+	lodsw #ax has word to copy
+	rep stosw
+	lodsw #ax has offset
+	mov di, ax
+	lodsw #ax has length
+	mov cx, ax
+	lodsw #ax has word to copy
+	rep stosw
+	lodsw #ax has offset
+	mov di, ax
+	lodsw #ax has length
+	mov cx, ax
+	lodsw #ax has word to copy
+	rep stosw
+frameloop_fill_no4:
+	test dx, dx
+	jz frameloop_copystart #If length is now zero, skip to doing copies
+frameloop_fillloop: #partially unrolled for SPEED!
+	lodsw #ax has offset
+	mov di, ax
+	lodsw #ax has length
+	mov cx, ax
+	lodsw #ax has word to copy
+	rep stosw
+	lodsw #ax has offset
+	mov di, ax
+	lodsw #ax has length
+	mov cx, ax
+	lodsw #ax has word to copy
+	rep stosw
+	lodsw #ax has offset
+	mov di, ax
+	lodsw #ax has length
+	mov cx, ax
+	lodsw #ax has word to copy
+	rep stosw
+	lodsw #ax has offset
+	mov di, ax
+	lodsw #ax has length
+	mov cx, ax
+	lodsw #ax has word to copy
+	rep stosw
+	lodsw #ax has offset
+	mov di, ax
+	lodsw #ax has length
+	mov cx, ax
+	lodsw #ax has word to copy
+	rep stosw
+	lodsw #ax has offset
+	mov di, ax
+	lodsw #ax has length
+	mov cx, ax
+	lodsw #ax has word to copy
+	rep stosw
+	lodsw #ax has offset
+	mov di, ax
+	lodsw #ax has length
+	mov cx, ax
+	lodsw #ax has word to copy
+	rep stosw
+	lodsw #ax has offset
+	mov di, ax
+	lodsw #ax has length
+	mov cx, ax
+	lodsw #ax has word to copy
+	rep stosw
+	dec dx
+	jnz frameloop_fillloop
+	
+	#Write data copies
+frameloop_copystart:
+	lodsw #ax has number of copies
+	mov dx, ax
+	shr dx, 1
+	jnc frameloop_copy_no1
+	lodsw #ax has offset
+	mov di, ax
+	lodsw #ax has length
+	mov cx, ax
+	rep movsw
+frameloop_copy_no1:
+	shr dx, 1
+	jnc frameloop_copy_no2
+	lodsw #ax has offset
+	mov di, ax
+	lodsw #ax has length
+	mov cx, ax
+	rep movsw
+	lodsw #ax has offset
+	mov di, ax
+	lodsw #ax has length
+	mov cx, ax
+	rep movsw
+frameloop_copy_no2:
+	shr dx, 1
+	jnc frameloop_copy_no4
+	lodsw #ax has offset
+	mov di, ax
+	lodsw #ax has length
+	mov cx, ax
+	rep movsw
+	lodsw #ax has offset
+	mov di, ax
+	lodsw #ax has length
+	mov cx, ax
+	rep movsw
+	lodsw #ax has offset
+	mov di, ax
+	lodsw #ax has length
+	mov cx, ax
+	rep movsw
+	lodsw #ax has offset
+	mov di, ax
+	lodsw #ax has length
+	mov cx, ax
+	rep movsw
+frameloop_copy_no4:
+	test dx, dx
+	jz frameloop_planeend #If length is now zero, skip to the end of the plane
+frameloop_copyloop: #partially unrolled for SPEED!
+	lodsw #ax has offset
+	mov di, ax
+	lodsw #ax has length
+	mov cx, ax
+	rep movsw
+	lodsw #ax has offset
+	mov di, ax
+	lodsw #ax has length
+	mov cx, ax
+	rep movsw
+	lodsw #ax has offset
+	mov di, ax
+	lodsw #ax has length
+	mov cx, ax
+	rep movsw
+	lodsw #ax has offset
+	mov di, ax
+	lodsw #ax has length
+	mov cx, ax
+	rep movsw
+	lodsw #ax has offset
+	mov di, ax
+	lodsw #ax has length
+	mov cx, ax
+	rep movsw
+	lodsw #ax has offset
+	mov di, ax
+	lodsw #ax has length
+	mov cx, ax
+	rep movsw
+	lodsw #ax has offset
+	mov di, ax
+	lodsw #ax has length
+	mov cx, ax
+	rep movsw
+	lodsw #ax has offset
+	mov di, ax
+	lodsw #ax has length
+	mov cx, ax
+	rep movsw
+	dec dx
+	jnz frameloop_copyloop
 	
 frameloop_planeend:
 	mov cs:filebuffercurpos, si
 	add bx, 2
 	cmp bx, 8
-	jb frameloop_planereadloop
-	
+	jnb frameloop_stopplaneread
+	jmp frameloop_planereadloop #Prevent generating a conditional near jump, which is unsupported below 80386
+frameloop_stopplaneread:
 	push cs
 	pop ds
 	
