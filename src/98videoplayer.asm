@@ -188,7 +188,7 @@ PROCEDURE_video_read: #void video_read(uint16 handle [in bx])
 	mov ah, 0x3F
 	int 0x21		#DOS API: Read from file (0xC000 bytes into filebuffer)
 	xor si, si
-	mov bx, 0
+	xor bx, bx
 video_read_magicnum_loop: #Check that the file signature is ok
 	mov al, [si]
 	mov ah, cs:[di]
@@ -212,6 +212,16 @@ video_read_end_magicnum: #Set various options
 	lodsw
 	mov cs:numframes_hi, ax
 	lodsw
+	mov bx, ax
+	test bx, 0x0010
+	jz video_read_fullres
+	push ax
+	mov ah, 0x42
+	mov ch, 0x80
+	int 0x18		#PC98 CRT BIOS: Set display options (640x200, display page 0, colour mode)
+	pop ax
+video_read_fullres:
+	and ax, 0x0007
 	mov cs:audiospec, ax
 	xor ax, ax
 	mov cl, 16
@@ -434,6 +444,10 @@ video_read_startplay:
 video_read_frameloop:
 	call PROCEDURE_frameloop
 video_read_vsync_wait:
+	in al, 0x41		#PC-98 keyboard I/O: read keyboard data
+	cmp al, 0x80
+	je video_read_end_of_video #If Esc is pressed, stop playback
+	hlt
 	mov bx, framesleft
 	cmp bx, 0
 	jg video_read_vsync_wait
@@ -446,6 +460,7 @@ video_read_vsync_wait:
 	dec dx
 	jne video_read_frameloop
 	
+video_read_end_of_video:
 	mov al, using_86
 	cmp al, 0x01
 	je video_read_endfunc
@@ -478,25 +493,22 @@ PROCEDURE_vsync_interrupt: #void vsync_interrupt(void)
 	iret
 
 #Interrupt routine to set the buzzer duty level for the current sample. Not used if the 86 soundboard is present.
-PROCEDURE_buzzer_interrupt: #void buzzer_interrupt(void)
+PROCEDURE_buzzer_interrupt_16bit: #void buzzer_interrupt_16bit(void)
 	push dx
 	push si
 	push ax
-	push ds
 	
 	mov dx, 0x3FDB
 	mov si, cs:currentreadsample
-	mov ax, cs
-	mov ds, ax
-	lodsw
+	mov ax, cs:[si]
 	out dx, al
 	xchg al, ah
 	out dx, al
-	mov currentreadsample, si
+	addw cs:currentreadsample, 2
 	
 	mov al, 0x20
 	out 0x00, al	#PC-98 interrupt controller: signal end of interrupt
-	pop ds
+	
 	pop ax
 	pop si
 	pop dx
@@ -572,15 +584,16 @@ PROCEDURE_frameloop: #void frameloop(void)
 	mov al, cs:using_86
 	mov si, cs:filebuffercurpos
 	cmp al, 0x01
-	je frameloop_86audio
+	jne frameloop_buzaudio
+	jmp frameloop_86audio
 	
 	#Decode ADPCM for buzzer PCM
+frameloop_buzaudio:
 	pop bp
 	mov di, cs:samplebufferptr
 	push cs
 	pop es
-	mov ax, cs:samplebufferptr
-	mov cs:currentreadsample, ax
+	mov cs:currentreadsample, di
 	mov dx, 0xA46C
 	mov cx, cs:adpcmshiftval
 frameloop_buzaudio_pushloop:
@@ -622,6 +635,10 @@ frameloop_buzaudio_pushloop:
 	mov cl, cs:[bx+accelerationtable_adpcm]
 	dec bp
 	jnz frameloop_buzaudio_pushloop
+	push cx
+	mov cx, 0x0010
+	rep stosw #Add padding to reduce clipping(?)
+	pop cx
 	jmp frameloop_videodata_process
 	
 frameloop_86audio:
@@ -920,12 +937,12 @@ frameloop_stopplaneread:
 								.word	0x002D, 0x003C, 0x005B, 0x0079, 0x00B5, 0x00F1, 0x016A, 0x01E3 #1.9968 MHz bus
 	shiftdownvalues:			.byte	  0x0B,   0x0A,   0x0A,   0x09,   0x09,   0x08,   0x08,   0x07 #2.4576 MHz bus
 								.byte	  0x0B,   0x0B,   0x0A,   0x0A,   0x09,   0x09,   0x08,   0x08 #1.9968 MHz bus
+	new_vsync_vector_offset:	.dc.w	PROCEDURE_vsync_interrupt
+	new_timer_vector_offset:	.dc.w	PROCEDURE_buzzer_interrupt_16bit
 	old_vsync_vector_offset:	.word	0x0000
 	old_vsync_vector_segment:	.word	0x0000
 	old_timer_vector_offset:	.word	0x0000
 	old_timer_vector_segment:	.word	0x0000
-	new_vsync_vector_offset:	.dc.w	PROCEDURE_vsync_interrupt
-	new_timer_vector_offset:	.dc.w	PROCEDURE_buzzer_interrupt
 	using_86:					.byte	0x00
 	current_buzzer_shiftdown:	.byte	0x00
 	old_interrupt_mask:			.byte	0x00
