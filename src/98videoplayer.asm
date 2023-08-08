@@ -26,8 +26,8 @@
 .arch i486
 .intel_syntax noprefix
 .code16 ;#This is intended to run in real mode
-.org 0x100 ;#This is intended to be a .com file, so all absolute addresses must start from 0x0100
 
+.text
 PROCEDURE_main: ;#int main(char[] argv)
 	mov ax, cs
 	mov baseseg, ax ;#Get loaded segment
@@ -397,7 +397,7 @@ video_read_no86:
 	push cs
 	pop es
 	mov cx, 0x2000
-	mov ax, current_sample_midpoint1
+	mov ax, current_sample_midpoint
 	rep stosw
 	
 	mov al, 0x36
@@ -926,6 +926,7 @@ frameloop_stopplaneread:
 	pop cx
 	ret
 	
+.data
 	file_openerror_message:		.ascii	"Error, could not open file.$"
 	file_formaterror_message:	.ascii	"Error, file is not a .98v file.$"
 	magic_number:				.ascii	"98V\0"

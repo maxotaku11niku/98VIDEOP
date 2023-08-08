@@ -1,23 +1,16 @@
-# THIS MAKEFILE DOESN'T WORK YET!!
-
 # Directories
 TARGET	:= bin
 BUILD	:= obj
-BINO	:= objb
 PROCESS	:= objp
 SOURCES	:= src
 # Find source files
 export ASMFILES		:= $(foreach dir,$(SOURCES),$(notdir $(wildcard $(dir)/*.asm)))
 export OFILES	:= $(ASMFILES:.asm=.o)
 # Targets
-all: $(PROCESS) $(BUILD) $(BINO) midprocess
+all: $(PROCESS) $(BUILD) $(TARGET)/98VIDEOP.COM
 
 $(BUILD):
 	[ -d $(BUILD) ] || mkdir -p $(BUILD)
-	make -f $(CURDIR)/Makefile
-
-$(BINO):
-	[ -d $(BINO) ] || mkdir -p $(BINO)
 	make -f $(CURDIR)/Makefile
 
 $(PROCESS):
@@ -28,11 +21,12 @@ $(TARGET):
 	[ -d $(TARGET) ] || mkdir -p $(TARGET)
 	make -f $(CURDIR)/Makefile
 
-midprocess	: $(BUILD)/$(OFILES)
-	ld -b elf32-i386 -o $(PROCESS)/98videop.o $^
 	
-$(BINO)/$(OFILES)	: $(BUILD)/$(OFILES)
-	objcopy -O elf32-i386 $< $@
+$(TARGET)/98VIDEOP.COM	: $(PROCESS)/98videop.o
+	objcopy -O binary $< $@
+
+$(PROCESS)/98videop.o	: $(BUILD)/$(OFILES)
+	ld -T doscom.lds -m i386pe -o $(PROCESS)/98videop.o $^
 
 $(BUILD)/$(OFILES)	: $(SOURCES)/$(ASMFILES)
 	as $< -o $@ -march=i386 -mtune=i386 --32

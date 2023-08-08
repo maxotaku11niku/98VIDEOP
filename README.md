@@ -22,4 +22,4 @@ Sound: Buzzer with PIT, PC-9801-86 recommended for higher quality sound
 Storage: Program itself is only a kilobyte or so, may need lots of megabytes for the actual videos though
 
 # Building
-I build the source using the GNU assembler and a cursed and totally unportable batch file. If you're at all interested in building this from source, well, there's only one source file :). Remember that this is intended to be a DOS .COM executable, so you should have a `.org 0x100` directive or similar to specify the origin point. Double check the actual file you get doesn't have 256 empty bytes at the beginning; it seems that modern assemblers can't handle such old stuff.
+I build the source using the GNU assembler. If you're at all interested in building this from source, well, there's only one source file :). The makefile and linker script are all you need, really, so just invoke `make` in the directory and you should be alright.
