@@ -29,4 +29,4 @@ $(PROCESS)/98videop.o	: $(BUILD)/$(OFILES)
 	ld -T doscom.lds -m i386pe -o $(PROCESS)/98videop.o $^
 
 $(BUILD)/$(OFILES)	: $(SOURCES)/$(ASMFILES)
-	as $< -o $@ -march=i386 -mtune=i386 --32
+	as $< -o $@ -march=i386 -mtune=i286 --32

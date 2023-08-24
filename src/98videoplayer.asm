@@ -23,7 +23,7 @@
 ;#FROM, OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR
 ;#OTHER DEALINGS IN THE SOFTWARE.
 
-.arch i486
+.arch i286
 .intel_syntax noprefix
 .code16 ;#This is intended to run in real mode
 
@@ -221,6 +221,9 @@ video_read_end_magicnum: ;#Set various options
 	int 0x18		;#PC98 CRT BIOS: Set display options (640x200, display page 0, colour mode)
 	pop ax
 video_read_fullres:
+	and bx, 0x0020
+	shr bx, 5
+	mov cs:is_stereo, bl
 	and ax, 0x0007
 	mov cs:audiospec, ax
 	xor ax, ax
@@ -581,19 +584,25 @@ PROCEDURE_frameloop: ;#void frameloop(void)
 	mov cx, ax
 	push cx
 	mov cs:filebuffercurpos, si
+	mov bl, cs:is_stereo
+	test bl, bl
+	jz notstereo
+	shl ax, 1
+notstereo:
 	shl ax, 1
 	add ax, 4
 	call PROCEDURE_tryreadsection
 	
 	mov al, cs:using_86
 	mov si, cs:filebuffercurpos
-	cmp al, 0x01
-	jne frameloop_buzaudio
+	test al, al
+	jz frameloop_buzaudio
 	jmp frameloop_86audio
 	
 	;#Decode ADPCM for buzzer PCM
 frameloop_buzaudio:
 	pop bp
+	push bp
 	mov di, cs:samplebufferptr
 	push cs
 	pop es
@@ -643,14 +652,23 @@ frameloop_buzaudio_pushloop:
 	mov cx, 0x0010
 	rep stosb ;#Add padding to reduce clipping(?)
 	pop cx
+	pop ax
+	mov bl, cs:is_stereo
+	test bl, bl
+	jz no_skip_stereodata
+	shl ax, 1
+	add si, ax ;#Needed to skip over unused stereo difference data (buzzer audio is forced mono)
+no_skip_stereodata:
 	jmp frameloop_videodata_process
 	
 frameloop_86audio:
 	;#Decode ADPCM for 86 PCM
+	test bl, bl
+	jnz frameloop_86audio_stereo
 	pop di
 	mov dx, 0xA46C
 	mov cx, cs:adpcmshiftval
-frameloop_86audio_pushloop:
+frameloop_86audio_mono_pushloop:
 	lodsw
 	push ax
 	xor ah, ah
@@ -690,7 +708,104 @@ frameloop_86audio_pushloop:
 	out dx, al
 	mov cl, cs:[bx+accelerationtable_adpcm]
 	dec di
-	jnz frameloop_86audio_pushloop
+	jnz frameloop_86audio_mono_pushloop
+	jmp frameloop_videodata_process
+	
+frameloop_86audio_stereo:
+	pop bp
+	mov dx, 0xA46C
+	mov cl, cs:adpcmshiftval
+	mov ch, cs:adpcmshiftval_diff
+	mov bx, bp
+	shl bx, 1
+frameloop_86audio_stereo_pushloop:
+	lodsw
+	push ax
+	xor ah, ah
+	mov di, cx
+	and di, 0x00FF
+	shl di, 8
+	add di, ax
+	cbw
+	shl ax, cl
+	add ax, cs:lastsample
+	mov cs:lastsample, ax
+	mov cl, cs:[di+accelerationtable_adpcm]
+	mov al, [bx+si-2]
+	xor ah, ah
+	xchg cl, ch
+	mov di, cx
+	and di, 0x00FF
+	shl di, 8
+	add di, ax
+	cbw
+	shl ax, cl
+	add ax, cs:lastsample_diff
+	mov cs:lastsample_diff, ax
+	mov cl, cs:[di+accelerationtable_adpcm]
+	mov di, ax
+	mov ax, cs:lastsample
+	push bx
+	mov bx, ax
+	add ax, di
+	xchg al, ah ;#output left sample
+	out dx, al
+	xchg al, ah
+	out dx, al
+	sub bx, di
+	mov ax, bx
+	xchg al, ah ;#output right sample
+	out dx, al
+	xchg al, ah
+	out dx, al
+	pop bx
+	xchg cl, ch
+	pop ax
+	xchg al, ah
+	xor ah, ah
+	mov di, cx
+	and di, 0x00FF
+	shl di, 8
+	add di, ax
+	cbw
+	shl ax, cl
+	add ax, cs:lastsample
+	mov cs:lastsample, ax
+	mov cl, cs:[di+accelerationtable_adpcm]
+	mov al, [bx+si-1]
+	xor ah, ah
+	xchg cl, ch
+	mov di, cx
+	and di, 0x00FF
+	shl di, 8
+	add di, ax
+	cbw
+	shl ax, cl
+	add ax, cs:lastsample_diff
+	mov cs:lastsample_diff, ax
+	mov cl, cs:[di+accelerationtable_adpcm]
+	mov di, ax
+	mov ax, cs:lastsample
+	push bx
+	mov bx, ax
+	add ax, di
+	xchg al, ah ;#output left sample
+	out dx, al
+	xchg al, ah
+	out dx, al
+	sub bx, di
+	mov ax, bx
+	xchg al, ah ;#output right sample
+	out dx, al
+	xchg al, ah
+	out dx, al
+	pop bx
+	xchg cl, ch
+	dec bp
+	jnz frameloop_86audio_stereo_pushloop
+	mov cs:adpcmshiftval_diff, ch
+	xor ch, ch
+	add si, bx
 	
 frameloop_videodata_process:
 	mov cs:adpcmshiftval, cx
@@ -944,6 +1059,7 @@ frameloop_stopplaneread:
 	old_timer_vector_offset:	.word	0x0000
 	old_timer_vector_segment:	.word	0x0000
 	using_86:					.byte	0x00
+	is_stereo:					.byte	0x00
 	current_buzzer_shiftdown:	.byte	0x00
 	old_interrupt_mask:			.byte	0x00
 	current_sample_midpoint:	.word	0x0000
@@ -959,7 +1075,9 @@ frameloop_stopplaneread:
 	framesleft:					.word	0x0000
 	audiospec:					.word	0x0000
 	lastsample:					.word	0x0000
+	lastsample_diff:			.word	0x0000
 	adpcmshiftval:				.word	0x0000
+	adpcmshiftval_diff:			.word	0x0000
 	numframes_lo:				.word	0x0000
 	numframes_hi:				.word	0x0000 ;#32-bit to support very long videos
 	filehandle:					.word	0x0000

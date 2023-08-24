@@ -19,14 +19,18 @@ Header:
 	Screen resolution spec (bit 4)
 	0x00	640x400 (pixel aspect 1:1)
 	0x10	640x200	(pixel aspect 1:2)
-	Unused (bit 5-7)
+	Audio channel spec (bit 5)
+	0x00	Mono
+	0x20	Stereo (if ADPCM, else also mono)
+	Unused (bit 6-7)
 	high byte uint8 Unused
 0x0A	uint4[16][3] colour table (rg br gb ...) for all 16 initial colours
 
 Frame Data:
 Audio Data:
 0x00	uint16 length of audio data (16-bit words, n)
-0x02	uint16[n] Audio data
+0x02	uint16[n] Audio data (mean level)
+var	uint16[n] Audio data (stereo difference, only if stereo specified, otherwise it is left out)
 ADPCM:
 The audio data is in 8-bit signed ADPCM format which expands to signed 16-bit PCM
 Buzzer audio:
@@ -38,6 +42,12 @@ ADPCM codec:
 	abs(data) <= 0x18: decrement bitshift by 1 after this sample.
 	abs(data) >= 0x68: increment bitshift by 1 after this sample.
 	(My decoder actually uses an acceleration table it creates at startup just to speed things up by using an acceptable amount of memory)
+Stereo encoding:
+	The mean level signal (m) is always included as this is the mono signal. Stereo is encoded through a difference signal (d), which uses the same ADPCM encoding as the mean level signal.
+	To get the right (r) and left (l) signals, we apply the following transformations:
+	l = m + d
+	r = m - d
+	This ordering is arbitrary.
 Video Frame Header:
 0x00	low byte  UUUU IRGB  planes to update (automatically determines how many plane sections and which planes they correspond to, U is reserved for 256 colour board compatibility)
 	high byte 0000 000P  update palette?
