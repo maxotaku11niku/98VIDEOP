@@ -31,7 +31,9 @@
 PROCEDURE_main: ;#int main(char[] argv)
 	mov ax, cs
 	mov baseseg, ax ;#Get loaded segment
-	add ax, 0x1000
+	add ax, 0x1FFF
+	shr ax, 12
+	shl ax, 12 ;#Ensure 64 KB alignment since disk transfers use DMA
 	mov filebufferseg, ax ;#Set file buffer segment
 	mov ax, 0x3D00
 	;#DOS-specific: null-terminate command stub in PSP
@@ -113,7 +115,7 @@ PROCEDURE_install_vsync_vector: ;#void install_vsync_vector(void)
 	int 0x21		;#DOS API: Get interrupt vector (0x0A [hardware: VSYNC]) -> es:bx
 	mov old_vsync_vector_segment, es
 	mov old_vsync_vector_offset, bx
-	mov dx, new_vsync_vector_offset
+	mov dx, offset PROCEDURE_vsync_interrupt
 	mov ax, 0x250A
 	int 0x21		;#DOS API: Set interrupt vector (0x0A [hardware: VSYNC] to our vsync function)
 	out 0x64, al	;#PC-98 GDC I/O: CRT interrupt reset
@@ -145,7 +147,7 @@ PROCEDURE_install_timer_vector: ;#void install_timer_vector(void)
 	int 0x21		;#DOS API: Get interrupt vector (0x08 [hardware: Timer]) -> es:bx
 	mov old_timer_vector_segment, es
 	mov old_timer_vector_offset, bx
-	mov dx, new_timer_vector_offset
+	mov dx, offset PROCEDURE_buzzer_interrupt_8bit
 	mov ax, 0x2508
 	int 0x21		;#DOS API: Set interrupt vector (0x08 [hardware: Timer] to our timer function)
 	in al, 0x02		;#PC-98 interrupt controller I/O: read mask
@@ -195,12 +197,19 @@ video_read_magicnum_loop: ;#Check that the file signature is ok
 	test ah, ah
 	jz video_read_end_magicnum
 	xor ah, al
-	jz video_read_stillrightformat
-	jmp video_read_wrongformat ;#Prevent generating a conditional near jump, which is unsupported below 80386
-video_read_stillrightformat:
+	jnz video_read_wrongformat
 	inc si
 	inc di
 	jmp video_read_magicnum_loop
+video_read_wrongformat:
+	push cs
+	pop ds
+	mov ah, 0x09
+	lea dx, file_formaterror_message
+	int 0x21		;#DOS Main API, ah = 09h: Display string, dx = &file_formaterror_message: Pointer to string
+	mov cx, 0xDEAD
+	ret	
+
 video_read_end_magicnum: ;#Set various options
 	lodsb
 	mov ah, 0
@@ -322,17 +331,24 @@ video_read_adpcmtable_formloop: ;#build table for shift 1 to 7
 	
 	
 	
-	;#Check for 86 soundboard
+	;#Check the available sound hardware
 	mov dx, 0xA460
 	in al, dx
 	and al, 0xE0
 	cmp al, 0x40 ;#86 at I/O port 018x
 	je video_read_has86
 	cmp al, 0x50 ;#86 at I/O port 028x
-	jne video_read_no86
+	je video_read_has86
+	cmp al, 0x60 ;#WSS-compatible
+	je video_read_haswss
+	cmp al, 0x70 ;#WSS-compatible
+	je video_read_haswss
+	cmp al, 0x80 ;#WSS-compatible
+	je video_read_haswss
+	jmp video_read_nopcm ;#Only has basic internal buzzer
 	
-	;#Prepare audio here for 86 soundboard (turns out there is no ADPCM support)
 video_read_has86:
+	;#Prepare audio here for 86 soundboard (turns out there is no ADPCM support)
 	mov dx, 0xA468
 	in al, dx
 	out 0x5F, al
@@ -389,12 +405,131 @@ video_read_has86:
 	mov dx, 0xA466
 	mov al, 0xA0 ;#set volume to maximum
 	out dx, al
-	mov al, 0x01
-	mov using_86, al
+	
+	movw fifo_io_addr, 0xA46C
+	movb using_sound, 0x01
 	jmp video_read_startplay
 	
-video_read_no86:
-	;#Prepare audio here if there is no 86 soundboard available
+video_read_haswss:
+	;#Prepare audio here for a WSS-compatible soundboard
+	mov ax, filebufferseg
+	add ax, 0x1000
+	mov samplebufferseg, ax
+	shr ax, 12
+	mov samplebuffer_dmabank, ax
+	xor ax, ax
+	mov samplebufferptr, ax
+	xor di, di
+	mov ax, samplebufferseg
+	mov es, ax
+	mov cx, 0x4000
+	xor ax, ax
+	rep stosw
+	
+	mov ax, 0x0400
+	mov currentreadsample, ax
+	
+	mov dx, 0x0C24
+	mov al, 0x80
+	out dx, al ;#turn on sound
+	
+	mov dx, 0x0F40
+	mov al, 0x0B
+	out dx, al ;#set to use expansion INT 0 and DMA channel 3
+	
+	mov dx, 0x0F44
+	mov al, 0x6C
+	out dx, al
+	inc dx
+	mov al, 0xC0
+	out dx, al ;#set to MODE2
+	
+	mov dx, 0x0F44
+video_read_haswss_mcepoll1:
+	in al, dx
+	cmp al, 0x80
+	je video_read_haswss_mcepoll1
+	
+	mov al, 0x70
+	out dx, al
+	inc dx
+	mov al, 0x10
+	out dx, al ;#allow changing sample format and make sure samples are held if missed
+	
+	mov dx, 0x0F44
+video_read_haswss_mcepoll2:
+	in al, dx
+	cmp al, 0x80
+	je video_read_haswss_mcepoll2
+
+	mov al, 0x68
+	out dx, al
+	inc dx
+	mov al, 0x40
+	mov bx, audiospec
+	mov cl, [sampleratespec_to_wssdiv + bx]
+	mov ch, is_stereo
+	shl ch, 4
+	or al, cl
+	or al, ch
+	out dx, al ;#set sample format appropriately
+	
+	mov dx, 0x0F44
+video_read_haswss_mcepoll3:
+	in al, dx
+	cmp al, 0x80
+	je video_read_haswss_mcepoll3
+	
+	mov al, 0x26
+	out dx, al
+	inc dx
+	mov al, 0x00
+	out dx, al ;#set left DAC to 0 dB
+	
+	mov dx, 0x0F44
+	mov al, 0x27
+	out dx, al
+	inc dx
+	mov al, 0x00
+	out dx, al ;#set right DAC to 0 dB
+	
+	mov al, 0x1B
+	out 0x17, al ;#set channel 3 to use demand mode, with autoinitialisation read transfer
+	out 0x19, al ;#reset pointer and counter
+	mov al, samplebuffer_dmabank
+	out 0x25, al ;#set DMA bank for channel 3
+	xor ax, ax
+	out 0x0D, al
+	out 0x0D, al ;#set DMA offset for channel 3 (forced to 0)
+	mov ax, 0x8000
+	out 0x0F, al
+	xchg al, ah
+	out 0x0F, al ;#set DMA count for channel 3 to a long length
+	mov al, 0x03
+	out 0x15, al ;#unmask channel 3
+	mov ax, cs
+	mov ds, ax
+	
+	mov dx, 0x0F44
+	mov al, 0x2A
+	out dx, al
+	inc dx
+	mov al, 0x02
+	out dx, al ;#enable interrupts
+	
+	mov dx, 0x0F44
+	mov al, 0x69
+	out dx, al
+	inc dx
+	mov al, 0x05
+	out dx, al ;#set to single-channel DMA mode and turn playback on
+	
+	movw fifo_io_addr, 0x0F47
+	movb using_sound, 0x02
+	jmp video_read_startplay
+
+video_read_nopcm:
+	;#Prepare audio here if there is no proper PCM soundboard available
 	;#Clear sample buffer
 	mov di, samplebufferptr
 	push cs
@@ -411,7 +546,7 @@ video_read_no86:
 
 	;#0 -> 2.4576 MHz
 	;#1 -> 1.9968 MHz
-	lea bx, shiftdownvalues
+	mov bx, offset shiftdownvalues
 	mov dx, audiospec
 	shr ax, 2
 	add bx, dx
@@ -421,7 +556,7 @@ video_read_no86:
 	mov bx, 0x8000
 	shr bx, cl
 	mov current_sample_midpoint, bx
-	lea bx, sampleratespec_to_buzzfreq
+	mov bx, offset sampleratespec_to_buzzfreq
 	shl dx, 1
 	shl ax, 1
 	add bx, dx
@@ -443,8 +578,7 @@ video_read_no86:
 	
 	call PROCEDURE_install_timer_vector
 	
-	mov al, 0x00
-	mov using_86, al
+	movb using_sound, 0x00
 	
 video_read_startplay:
 	mov cx, numframes_lo
@@ -465,24 +599,43 @@ video_read_vsync_wait:
 	dec cx
 	jnz video_read_frameloop
 	test dx, dx
-	jz video_read_endfunc
+	jz video_read_end_of_video
 	dec dx
 	jne video_read_frameloop
 	
 video_read_end_of_video:
-	mov al, using_86
-	cmp al, 0x01
-	je video_read_endfunc
+	mov al, using_sound
+	test al, al
+	jnz video_read_end_pcm
 	call PROCEDURE_restore_timer_vector
 	jmp video_read_endfunc
-video_read_wrongformat:
-	push cs
-	pop ds
-	mov ah, 0x09
-	lea dx, file_formaterror_message
-	int 0x21		;#DOS Main API, ah = 09h: Display string, dx = &file_formaterror_message: Pointer to string
-	mov cx, 0xDEAD
-	ret
+video_read_end_pcm:
+	cmp al, 0x01
+	je video_read_endfunc
+	;# Turn off WSS-compatible soundboard and DMA channel 3
+	
+	out 0x19, al ;#reset pointer and counter
+	mov al, 0x07
+	out 0x15, al ;#mask channel 3
+	
+	mov dx, 0x0F44
+	mov al, 0x2A
+	out dx, al
+	inc dx
+	mov al, 0x00
+	out dx, al ;#disable interrupts
+	
+	mov dx, 0x0F44
+	mov al, 0x69
+	out dx, al
+	inc dx
+	mov al, 0x00
+	out dx, al ;#turn playback off
+	
+	mov dx, 0x0C24
+	mov al, 0x00
+	out dx, al ;#turn off sound
+	
 video_read_endfunc:
 	mov cx, 0xF00D
 	ret
@@ -502,7 +655,7 @@ PROCEDURE_vsync_interrupt: ;#void vsync_interrupt(void)
 	iret
 
 ;#Interrupt routine to set the buzzer duty level for the current sample. Not used if the 86 soundboard is present.
-PROCEDURE_buzzer_interrupt_16bit: ;#void buzzer_interrupt_16bit(void)
+PROCEDURE_buzzer_interrupt_8bit: ;#void buzzer_interrupt_16bit(void)
 	push dx
 	push si
 	push ax
@@ -593,11 +746,13 @@ notstereo:
 	add ax, 4
 	call PROCEDURE_tryreadsection
 	
-	mov al, cs:using_86
+	mov al, cs:using_sound
 	mov si, cs:filebuffercurpos
 	test al, al
 	jz frameloop_buzaudio
-	jmp frameloop_86audio
+	cmp al, 0x01
+	je frameloop_86audio
+	jmp frameloop_wssaudio
 	
 	;#Decode ADPCM for buzzer PCM
 frameloop_buzaudio:
@@ -607,7 +762,6 @@ frameloop_buzaudio:
 	push cs
 	pop es
 	mov cs:currentreadsample, di
-	mov dx, 0xA46C
 	mov cx, cs:adpcmshiftval
 frameloop_buzaudio_pushloop:
 	lodsw
@@ -662,11 +816,11 @@ no_skip_stereodata:
 	jmp frameloop_videodata_process
 	
 frameloop_86audio:
-	;#Decode ADPCM for 86 PCM
+	;#Decode ADPCM for the 86 soundboard
 	test bl, bl
 	jnz frameloop_86audio_stereo
 	pop di
-	mov dx, 0xA46C
+	mov dx, cs:fifo_io_addr
 	mov cx, cs:adpcmshiftval
 frameloop_86audio_mono_pushloop:
 	lodsw
@@ -713,7 +867,7 @@ frameloop_86audio_mono_pushloop:
 	
 frameloop_86audio_stereo:
 	pop bp
-	mov dx, 0xA46C
+	mov dx, cs:fifo_io_addr
 	mov cl, cs:adpcmshiftval
 	mov ch, cs:adpcmshiftval_diff
 	mov bx, bp
@@ -806,6 +960,171 @@ frameloop_86audio_stereo_pushloop:
 	mov cs:adpcmshiftval_diff, ch
 	xor ch, ch
 	add si, bx
+	jmp frameloop_videodata_process
+
+frameloop_wssaudio:
+	;#Decode ADPCM for WSS-compatible audio
+	pop bp
+	mov di, cs:currentreadsample
+	mov ax, cs:samplebufferseg
+	mov es, ax
+	mov dx, 0x0F44
+	mov al, 0x2F
+	out dx, al
+	inc dx
+	mov cx, bp
+	shl cx, 1
+	dec cx
+	mov al, cl
+	out dx, al
+	dec dx
+	mov al, 0x2E
+	out dx, al
+	inc dx
+	mov al, ch
+	out dx, al ;#set DMA length (in number of samples)
+	test bl, bl
+	jnz frameloop_wssaudio_stereo
+	mov cx, cs:adpcmshiftval
+	inc dx
+	out dx, al ;#reenable DMA
+frameloop_wssaudio_mono_pushloop:
+	lodsw
+	push ax
+	xor ah, ah
+	mov bx, cx
+	shl bx, 8
+	add bx, ax
+	cbw
+	shl ax, cl
+	add ax, cs:lastsample
+	mov cs:lastsample, ax
+	stosw
+	mov cl, cs:[bx+accelerationtable_adpcm]
+	pop ax
+	xchg al, ah
+	xor ah, ah
+	mov bx, cx
+	shl bx, 8
+	add bx, ax
+	cbw
+	shl ax, cl
+	add ax, cs:lastsample
+	mov cs:lastsample, ax
+	stosw
+	mov cl, cs:[bx+accelerationtable_adpcm]
+	dec bp
+	jnz frameloop_wssaudio_mono_pushloop
+	jmp frameloop_wssaudio_cleanup
+	
+frameloop_wssaudio_stereo:	
+	mov cl, cs:adpcmshiftval
+	mov ch, cs:adpcmshiftval_diff
+	mov bx, bp
+	shl bx, 1
+	inc dx
+	out dx, al ;#reenable DMA
+frameloop_wssaudio_stereo_pushloop:
+	lodsw
+	push ax
+	xor ah, ah
+	push di
+	mov di, cx
+	and di, 0x00FF
+	shl di, 8
+	add di, ax
+	cbw
+	shl ax, cl
+	add ax, cs:lastsample
+	mov cs:lastsample, ax
+	mov cl, cs:[di+accelerationtable_adpcm]
+	mov al, [bx+si-2]
+	xor ah, ah
+	xchg cl, ch
+	mov di, cx
+	and di, 0x00FF
+	shl di, 8
+	add di, ax
+	cbw
+	shl ax, cl
+	add ax, cs:lastsample_diff
+	mov cs:lastsample_diff, ax
+	mov cl, cs:[di+accelerationtable_adpcm]
+	pop di
+	mov dx, ax
+	mov ax, cs:lastsample
+	push bx
+	mov bx, ax
+	add ax, dx
+	stosw ;#output left sample
+	sub bx, dx
+	mov ax, bx
+	stosw ;#output right sample
+	pop bx
+	xchg cl, ch
+	pop ax
+	xchg al, ah
+	xor ah, ah
+	push di
+	mov di, cx
+	and di, 0x00FF
+	shl di, 8
+	add di, ax
+	cbw
+	shl ax, cl
+	add ax, cs:lastsample
+	mov cs:lastsample, ax
+	mov cl, cs:[di+accelerationtable_adpcm]
+	mov al, [bx+si-1]
+	xor ah, ah
+	xchg cl, ch
+	mov di, cx
+	and di, 0x00FF
+	shl di, 8
+	add di, ax
+	cbw
+	shl ax, cl
+	add ax, cs:lastsample_diff
+	mov cs:lastsample_diff, ax
+	mov cl, cs:[di+accelerationtable_adpcm]
+	pop di
+	mov dx, ax
+	mov ax, cs:lastsample
+	push bx
+	mov bx, ax
+	add ax, dx
+	stosw ;#output left sample
+	sub bx, dx
+	mov ax, bx
+	stosw ;#output right sample
+	pop bx
+	xchg cl, ch
+	dec bp
+	jnz frameloop_wssaudio_stereo_pushloop
+	mov cs:adpcmshiftval_diff, ch
+	xor ch, ch
+	add si, bx
+
+frameloop_wssaudio_cleanup:
+	cmp di, 0x8000
+	jb frameloop_wssaudio_cleanup_nooverflow
+	push ds
+	push si
+	push cx
+	mov ax, cs:samplebufferseg
+	mov ds, ax
+	mov bx, 0x8000
+	mov si, bx
+	mov cx, di
+	xor di, di
+	sub cx, bx
+	shr cx, 1
+	rep movsw
+	pop cx
+	pop si
+	pop ds
+frameloop_wssaudio_cleanup_nooverflow:
+	mov cs:currentreadsample, di
 	
 frameloop_videodata_process:
 	mov cs:adpcmshiftval, cx
@@ -835,65 +1154,22 @@ frameloop_noplaneskip:
 	;#test ax, ax
 	;#jz frameloop_fillstart ;#If length is zero, skip to doing fills
 	;#mov dx, ax
-	;#add dx, 0x000F
-	;#shr dx, 4
-	;#and ax, 0x000F
-	;#jz frameloop_onedeltaloop ;#ax & 0xF == 0 => ax is a multiple of 16
+	;#add dx, 0x007F
+	;#shr dx, 7
+	;#and ax, 0x007F
+	;#jz frameloop_onedeltaloop ;#ax & 0xF == 0 => ax is a multiple of 128
 	;#shl ax, 2
-	;#mov di, 64
+	;#mov di, 4*128
 	;#sub di, ax
-	;#lea di, [di + frameloop_onedeltaloop]
+	;#add di, offset frameloop_onedeltaloop
 	;#jmp di
 	
 frameloop_onedeltaloop: ;#partially unrolled for SPEED!
+	;#.rept 128
 	;#lodsw ;#ax has offset
 	;#mov di, ax
 	;#movsw
-	;#lodsw ;#ax has offset
-	;#mov di, ax
-	;#movsw
-	;#lodsw ;#ax has offset
-	;#mov di, ax
-	;#movsw
-	;#lodsw ;#ax has offset
-	;#mov di, ax
-	;#movsw
-	;#lodsw ;#ax has offset
-	;#mov di, ax
-	;#movsw
-	;#lodsw ;#ax has offset
-	;#mov di, ax
-	;#movsw
-	;#lodsw ;#ax has offset
-	;#mov di, ax
-	;#movsw
-	;#lodsw ;#ax has offset
-	;#mov di, ax
-	;#movsw
-	;#lodsw ;#ax has offset
-	;#mov di, ax
-	;#movsw
-	;#lodsw ;#ax has offset
-	;#mov di, ax
-	;#movsw
-	;#lodsw ;#ax has offset
-	;#mov di, ax
-	;#movsw
-	;#lodsw ;#ax has offset
-	;#mov di, ax
-	;#movsw
-	;#lodsw ;#ax has offset
-	;#mov di, ax
-	;#movsw
-	;#lodsw ;#ax has offset
-	;#mov di, ax
-	;#movsw
-	;#lodsw ;#ax has offset
-	;#mov di, ax
-	;#movsw
-	;#lodsw ;#ax has offset
-	;#mov di, ax
-	;#movsw
+	;#.endr
 	;#dec dx
 	;#jnz frameloop_onedeltaloop
 	
@@ -903,67 +1179,27 @@ frameloop_fillstart:
 	test ax, ax
 	jz frameloop_copystart ;#If length is zero, skip to doing copies
 	mov dx, ax
-	add dx, 0x0007
-	shr dx, 3
-	and ax, 0x0007
-	jz frameloop_fillloop ;#ax & 0x7 == 0 => ax is a multiple of 8
+	add dx, 0x007F
+	shr dx, 7
+	and ax, 0x007F
+	jz frameloop_fillloop ;#ax & 0x7F == 0 => ax is a multiple of 128
 	mov di, ax
 	shl di, 3
 	add ax, di ;#ax *= 9 effectively, each fill iteration is 9 bytes worth of instructions
-	mov di, 72
+	mov di, 9*128
 	sub di, ax
-	lea di, [di + frameloop_fillloop]
+	add di, offset frameloop_fillloop
 	jmp di
 
 frameloop_fillloop: ;#partially unrolled for SPEED!
+	.rept 128
 	lodsw ;#ax has offset
 	mov di, ax
 	lodsw ;#ax has length
 	mov cx, ax
 	lodsw ;#ax has word to copy
 	rep stosw
-	lodsw ;#ax has offset
-	mov di, ax
-	lodsw ;#ax has length
-	mov cx, ax
-	lodsw ;#ax has word to copy
-	rep stosw
-	lodsw ;#ax has offset
-	mov di, ax
-	lodsw ;#ax has length
-	mov cx, ax
-	lodsw ;#ax has word to copy
-	rep stosw
-	lodsw ;#ax has offset
-	mov di, ax
-	lodsw ;#ax has length
-	mov cx, ax
-	lodsw ;#ax has word to copy
-	rep stosw
-	lodsw ;#ax has offset
-	mov di, ax
-	lodsw ;#ax has length
-	mov cx, ax
-	lodsw ;#ax has word to copy
-	rep stosw
-	lodsw ;#ax has offset
-	mov di, ax
-	lodsw ;#ax has length
-	mov cx, ax
-	lodsw ;#ax has word to copy
-	rep stosw
-	lodsw ;#ax has offset
-	mov di, ax
-	lodsw ;#ax has length
-	mov cx, ax
-	lodsw ;#ax has word to copy
-	rep stosw
-	lodsw ;#ax has offset
-	mov di, ax
-	lodsw ;#ax has length
-	mov cx, ax
-	lodsw ;#ax has word to copy
-	rep stosw
+	.endr
 	dec dx
 	jnz frameloop_fillloop
 	
@@ -973,57 +1209,24 @@ frameloop_copystart:
 	test ax, ax
 	jz frameloop_planeend ;#If length is zero, skip to the end of the plane
 	mov dx, ax
-	add dx, 0x0007
-	shr dx, 3
-	and ax, 0x0007
-	jz frameloop_copyloop ;#ax & 0x7 == 0 => ax is a multiple of 8
+	add dx, 0x007F
+	shr dx, 7
+	and ax, 0x007F
+	jz frameloop_copyloop ;#ax & 0x7F == 0 => ax is a multiple of 128
 	shl ax, 3 ;#ax *= 8 effectively, each copy iteration is 8 bytes worth of instructions
-	mov di, 64
+	mov di, 8*128
 	sub di, ax
-	lea di, [di + frameloop_copyloop]
+	add di, offset frameloop_copyloop
 	jmp di
 	
 frameloop_copyloop: ;#partially unrolled for SPEED!
+	.rept 128
 	lodsw ;#ax has offset
 	mov di, ax
 	lodsw ;#ax has length
 	mov cx, ax
 	rep movsw
-	lodsw ;#ax has offset
-	mov di, ax
-	lodsw ;#ax has length
-	mov cx, ax
-	rep movsw
-	lodsw ;#ax has offset
-	mov di, ax
-	lodsw ;#ax has length
-	mov cx, ax
-	rep movsw
-	lodsw ;#ax has offset
-	mov di, ax
-	lodsw ;#ax has length
-	mov cx, ax
-	rep movsw
-	lodsw ;#ax has offset
-	mov di, ax
-	lodsw ;#ax has length
-	mov cx, ax
-	rep movsw
-	lodsw ;#ax has offset
-	mov di, ax
-	lodsw ;#ax has length
-	mov cx, ax
-	rep movsw
-	lodsw ;#ax has offset
-	mov di, ax
-	lodsw ;#ax has length
-	mov cx, ax
-	rep movsw
-	lodsw ;#ax has offset
-	mov di, ax
-	lodsw ;#ax has length
-	mov cx, ax
-	rep movsw
+	.endr
 	dec dx
 	jnz frameloop_copyloop
 	
@@ -1048,17 +1251,17 @@ frameloop_stopplaneread:
 	planeseg:					.word	0xA800, 0xB000, 0xB800, 0xE000
 	planetests:					.word	0x0001, 0x0002, 0x0004, 0x0008
 							  ;#Hz     44100.0 33075.0 22050.0 16537.5 11025.0  8268.8  5520.0  4130.0
+	sampleratespec_to_wssdiv:	.byte	  0x0B,   0x0D,   0x07,   0x02,   0x03,   0x00,   0x01,   0x01
 	sampleratespec_to_buzzfreq:	.word	0x0038, 0x004A, 0x006F, 0x0095, 0x00DF, 0x0129, 0x01BD, 0x0253 ;#2.4576 MHz bus
 								.word	0x002D, 0x003C, 0x005B, 0x0079, 0x00B5, 0x00F1, 0x016A, 0x01E3 ;#1.9968 MHz bus
 	shiftdownvalues:			.byte	  0x0A,   0x0A,   0x09,   0x09,   0x08,   0x08,   0x08,   0x08 ;#2.4576 MHz bus
 								.byte	  0x0B,   0x0A,   0x0A,   0x09,   0x09,   0x08,   0x08,   0x08 ;#1.9968 MHz bus
-	new_vsync_vector_offset:	.dc.w	PROCEDURE_vsync_interrupt
-	new_timer_vector_offset:	.dc.w	PROCEDURE_buzzer_interrupt_16bit
 	old_vsync_vector_offset:	.word	0x0000
 	old_vsync_vector_segment:	.word	0x0000
 	old_timer_vector_offset:	.word	0x0000
 	old_timer_vector_segment:	.word	0x0000
-	using_86:					.byte	0x00
+	fifo_io_addr:				.word	0x0000
+	using_sound:				.byte	0x00
 	is_stereo:					.byte	0x00
 	current_buzzer_shiftdown:	.byte	0x00
 	old_interrupt_mask:			.byte	0x00
@@ -1081,5 +1284,7 @@ frameloop_stopplaneread:
 	numframes_lo:				.word	0x0000
 	numframes_hi:				.word	0x0000 ;#32-bit to support very long videos
 	filehandle:					.word	0x0000
+	samplebufferseg:			.word	0x0000
 	samplebufferptr:			.word	0x0000
+	samplebuffer_dmabank:		.word	0x0000
 	accelerationtable_adpcm:	.byte	0x00
